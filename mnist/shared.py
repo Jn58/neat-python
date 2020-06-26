@@ -7,8 +7,6 @@ data = np.fromfile('train_data',dtype=np.uint8,count=28*28*60000,offset=16).resh
 label = np.fromfile('train_label', dtype=np.uint8, count=60000, offset=8)
 onehot = np.eye(10)[label]
 
-import sys
-
 class Logger(object):
     def __init__(self):
         self.terminal = sys.stdout
