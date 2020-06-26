@@ -109,13 +109,14 @@ class DefaultConnectionGene(BaseGene):
         assert isinstance(key, tuple), "DefaultConnectionGene key must be a tuple, not {!r}".format(key)
         BaseGene.__init__(self, key)
 
+    def get_weight(self):
+        return self.weight
+
     def distance(self, other, config):
-        d = abs(self.weight - other.weight)
+        d = abs(self.get_weight() - other.get_weight())
         if self.enabled != other.enabled:
             d += 1.0
         return d * config.compatibility_weight_coefficient
-    def get_weight(self):
-        return self.weight
 
 class WeightGene(BaseGene):
     _gene_attributes = [FloatAttribute('weight')]
