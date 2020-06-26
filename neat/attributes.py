@@ -83,7 +83,8 @@ class FloatAttribute(BaseAttribute):
 
     def validate(self, config):  # pragma: no cover
         pass
-
+class EmptyAttribute(BaseAttribute):
+    _config_items = {}
 
 class BoolAttribute(BaseAttribute):
     """Class for boolean attributes such as whether a connection is enabled or not."""
