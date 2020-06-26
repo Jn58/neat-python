@@ -126,9 +126,8 @@ class WeightGene(BaseGene):
 class SharedConnectionGene(DefaultConnectionGene):
     _gene_attributes = [EmptyAttribute('weight'),
                         BoolAttribute('enabled')]
-    def __init__(self, key, weightGene: WeightGene):
-        self.weight = weightGene
+    def __init__(self, key):
         BaseGene.__init__(self, key)
     def get_weight(self):
-        self.weight.weight
+        return self.weight.weight
     

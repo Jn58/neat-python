@@ -3,14 +3,14 @@ from __future__ import division, print_function
 
 
 from itertools import count
-from random import choice, random, shuffle
+from random import choice, random, shuffle, sample
 
 import sys
 
 from neat.activations import ActivationFunctionSet
 from neat.aggregations import AggregationFunctionSet
 from neat.config import ConfigParameter, write_pretty_params
-from neat.genes import DefaultConnectionGene, DefaultNodeGene
+from neat.genes import DefaultConnectionGene, DefaultNodeGene, SharedConnectionGene, WeightGene
 from neat.graphs import creates_cycle
 
 
@@ -33,6 +33,9 @@ class DefaultGenomeConfig(object):
                         ConfigParameter('feed_forward', bool),
                         ConfigParameter('compatibility_disjoint_coefficient', float),
                         ConfigParameter('compatibility_weight_coefficient', float),
+                        ConfigParameter('conn_add_prob', float),
+                        ConfigParameter('conn_shared_add_prob', float),
+                        ConfigParameter('conn_reuse_weight_prob', float),
                         ConfigParameter('conn_add_prob', float),
                         ConfigParameter('conn_delete_prob', float),
                         ConfigParameter('node_add_prob', float),
@@ -472,6 +475,381 @@ class DefaultGenome(object):
     def create_connection(config, input_id, output_id):
         connection = config.connection_gene_type((input_id, output_id))
         connection.init_attributes(config)
+        return connection
+
+    def connect_fs_neat_nohidden(self, config):
+        """
+        Randomly connect one input to all output nodes
+        (FS-NEAT without connections to hidden, if any).
+        Originally connect_fs_neat.
+        """
+        input_id = choice(config.input_keys)
+        for output_id in config.output_keys:
+            connection = self.create_connection(config, input_id, output_id)
+            self.connections[connection.key] = connection
+
+    def connect_fs_neat_hidden(self, config):
+        """
+        Randomly connect one input to all hidden and output nodes
+        (FS-NEAT with connections to hidden, if any).
+        """
+        input_id = choice(config.input_keys)
+        others = [i for i in self.nodes if i not in config.input_keys]
+        for output_id in others:
+            connection = self.create_connection(config, input_id, output_id)
+            self.connections[connection.key] = connection
+
+    def compute_full_connections(self, config, direct):
+        """
+        Compute connections for a fully-connected feed-forward genome--each
+        input connected to all hidden nodes
+        (and output nodes if ``direct`` is set or there are no hidden nodes),
+        each hidden node connected to all output nodes.
+        (Recurrent genomes will also include node self-connections.)
+        """
+        hidden = [i for i in self.nodes if i not in config.output_keys]
+        output = [i for i in self.nodes if i in config.output_keys]
+        connections = []
+        if hidden:
+            for input_id in config.input_keys:
+                for h in hidden:
+                    connections.append((input_id, h))
+            for h in hidden:
+                for output_id in output:
+                    connections.append((h, output_id))
+        if direct or (not hidden):
+            for input_id in config.input_keys:
+                for output_id in output:
+                    connections.append((input_id, output_id))
+
+        # For recurrent genomes, include node self-connections.
+        if not config.feed_forward:
+            for i in self.nodes:
+                connections.append((i, i))
+
+        return connections
+
+    def connect_full_nodirect(self, config):
+        """
+        Create a fully-connected genome
+        (except without direct input-output unless no hidden nodes).
+        """
+        for input_id, output_id in self.compute_full_connections(config, False):
+            connection = self.create_connection(config, input_id, output_id)
+            self.connections[connection.key] = connection
+
+    def connect_full_direct(self, config):
+        """ Create a fully-connected genome, including direct input-output connections. """
+        for input_id, output_id in self.compute_full_connections(config, True):
+            connection = self.create_connection(config, input_id, output_id)
+            self.connections[connection.key] = connection
+
+    def connect_partial_nodirect(self, config):
+        """
+        Create a partially-connected genome,
+        with (unless no hidden nodes) no direct input-output connections."""
+        assert 0 <= config.connection_fraction <= 1
+        all_connections = self.compute_full_connections(config, False)
+        shuffle(all_connections)
+        num_to_add = int(round(len(all_connections) * config.connection_fraction))
+        for input_id, output_id in all_connections[:num_to_add]:
+            connection = self.create_connection(config, input_id, output_id)
+            self.connections[connection.key] = connection
+
+    def connect_partial_direct(self, config):
+        """
+        Create a partially-connected genome,
+        including (possibly) direct input-output connections.
+        """
+        assert 0 <= config.connection_fraction <= 1
+        all_connections = self.compute_full_connections(config, True)
+        shuffle(all_connections)
+        num_to_add = int(round(len(all_connections) * config.connection_fraction))
+        for input_id, output_id in all_connections[:num_to_add]:
+            connection = self.create_connection(config, input_id, output_id)
+            self.connections[connection.key] = connection
+
+class SharedGenome(DefaultGenome):
+    def __init__(self, key):
+        super().__init__(key)
+        self.sharedWeights = set()
+
+    def configure_crossover(self, genome1, genome2, config):
+        """ Configure a new genome by crossover from two parent genomes. """
+        if genome1.fitness > genome2.fitness:
+            parent1, parent2 = genome1, genome2
+        else:
+            parent1, parent2 = genome2, genome1
+        
+        sharedWeights = set()
+
+        # Inherit connection genes
+        for key, cg1 in parent1.connections.items():
+            cg2 = parent2.connections.get(key)
+            if cg2 is None:
+                # Excess or disjoint gene: copy from the fittest parent.
+                self.connections[key] = cg1.copy()
+            else:
+                # Homologous gene: combine genes from both parents.
+                if self.__class__ == cg2.__class__:
+                    self.connections[key] = cg1.crossover(cg2)
+                else:
+                    if random() > 0.5:
+                        self.connections[key] = cg1.copy()
+                    else:
+                        self.connections[key] = cg2.copy()
+            if self.connections[key].__class__ == SharedConnectionGene:
+                sharedWeights.add(self.connections[key].weight)
+        self.sharedWeights = sharedWeights
+
+        # Inherit node genes
+        parent1_set = parent1.nodes
+        parent2_set = parent2.nodes
+
+        for key, ng1 in parent1_set.items():
+            ng2 = parent2_set.get(key)
+            assert key not in self.nodes
+            if ng2 is None:
+                # Extra gene: copy from the fittest parent
+                self.nodes[key] = ng1.copy()
+            else:
+                # Homologous gene: combine genes from both parents.
+                self.nodes[key] = ng1.crossover(ng2)
+
+    def mutate(self, config):
+        """ Mutates this genome. """
+
+        if config.single_structural_mutation:
+            div = max(1, (config.node_add_prob + config.node_delete_prob +
+                          config.conn_add_prob + config.conn_delete_prob))
+            r = random()
+            if r < (config.node_add_prob/div):
+                self.mutate_add_node(config)
+            elif r < ((config.node_add_prob + config.node_delete_prob)/div):
+                self.mutate_delete_node(config)
+            elif r < ((config.node_add_prob + config.node_delete_prob +
+                       config.conn_add_prob)/div):
+                self.mutate_add_connection(config)
+            elif r < ((config.node_add_prob + config.node_delete_prob +
+                       config.conn_add_prob + config.conn_delete_prob)/div):
+                self.mutate_delete_connection()
+        else:
+            if random() < config.node_add_prob:
+                self.mutate_add_node(config)
+
+            if random() < config.node_delete_prob:
+                self.mutate_delete_node(config)
+
+            if random() < config.conn_add_prob:
+                self.mutate_add_connection(config)
+
+            if random() < config.conn_shared_add_prob:
+                self.mutate_add_shared_connection(config)
+
+            if random() < config.conn_delete_prob:
+                self.mutate_delete_connection()
+
+        # Mutate shared weights.
+        for wg in self.sharedWeights:
+            wg.mutate(config)
+
+        # Mutate connection genes.
+        for cg in self.connections.values():
+            if cg.__class__ is not SharedConnectionGene:
+                cg.mutate(config)
+
+        # Mutate node genes (bias, response, etc.).
+        for ng in self.nodes.values():
+            ng.mutate(config)
+
+    def mutate_add_node(self, config):
+        if not self.connections:
+            if config.check_structural_mutation_surer():
+                self.mutate_add_connection(config)
+            return
+
+        # Choose a random connection to split
+        conn_to_split = choice(list(self.connections.values()))
+        new_node_id = config.get_new_node_key(self.nodes)
+        ng = self.create_node(config, new_node_id)
+        self.nodes[new_node_id] = ng
+
+        # Disable this connection and create two new connections joining its nodes via
+        # the given node.  The new node+connections have roughly the same behavior as
+        # the original connection (depending on the activation function of the new node).
+        conn_to_split.enabled = False
+
+        i, o = conn_to_split.key
+        self.add_connection(config, i, new_node_id, 1.0, True)
+        if conn_to_split.__class__ == SharedConnectionGene:
+            self.add_shared_connection(config, new_node_id, o, conn_to_split.weight, True)
+        else:
+            self.add_connection(config, new_node_id, o, conn_to_split.weight, True)
+
+    def add_shared_connection(self, config, input_key, output_key, weight, enabled):
+        # TODO: Add further validation of this connection addition?
+        assert isinstance(input_key, int)
+        assert isinstance(output_key, int)
+        assert output_key >= 0
+        assert isinstance(enabled, bool)
+        key = (input_key, output_key)
+        connection = SharedConnectionGene(key)
+        connection.init_attributes(config)
+        connection.weight = weight
+        connection.enabled = enabled
+        self.connections[key] = connection
+
+    def mutate_add_shared_connection(self, config):
+        possible_outputs = list(self.nodes)
+        out_node = choice(possible_outputs)
+
+        possible_inputs = possible_outputs + config.input_keys
+        in_node = choice(possible_inputs)
+
+        # Don't duplicate connections.
+        key = (in_node, out_node)
+        if key in self.connections:
+            # TODO: Should this be using mutation to/from rates? Hairy to configure...
+            if config.check_structural_mutation_surer():
+                self.connections[key].enabled = True
+            return
+
+        # Don't allow connections between two output nodes
+        if in_node in config.output_keys and out_node in config.output_keys:
+            return
+
+        # No need to check for connections between input nodes:
+        # they cannot be the output end of a connection (see above).
+
+        # For feed-forward networks, avoid creating cycles.
+        if config.feed_forward and creates_cycle(list(self.connections), key):
+            return
+        if not self.sharedWeights:
+            weightGene = WeightGene() 
+            weightGene.init_attributes(config)
+            self.sharedWeights.add(weightGene)
+        else:
+            if random() < config.conn_reuse_weight_prob:
+                weightGene = sample(self.sharedWeights,1)[0]
+            else:
+                weightGene = WeightGene()
+                weightGene.init_attributes(config)
+
+        cg = self.create_shared_connection(config, in_node, out_node, weightGene)
+        self.connections[cg.key] = cg
+
+    def mutate_delete_node(self, config):
+        # Do nothing if there are no non-output nodes.
+        available_nodes = [k for k in self.nodes if k not in config.output_keys]
+        if not available_nodes:
+            return -1
+
+        del_key = choice(available_nodes)
+
+        connections_to_delete = set()
+        for k, v in self.connections.items():
+            if del_key in v.key:
+                connections_to_delete.add(v.key)
+
+        for key in connections_to_delete:
+            del self.connections[key]
+
+        del self.nodes[del_key]
+
+        return del_key
+
+    def mutate_delete_connection(self):
+        if self.connections:
+            key = choice(list(self.connections.keys()))
+            del self.connections[key]
+
+    def distance(self, other, config):
+        """
+        Returns the genetic distance between this genome and the other. This distance value
+        is used to compute genome compatibility for speciation.
+        """
+
+        # Compute node gene distance component.
+        node_distance = 0.0
+        if self.nodes or other.nodes:
+            disjoint_nodes = 0
+            for k2 in other.nodes:
+                if k2 not in self.nodes:
+                    disjoint_nodes += 1
+
+            for k1, n1 in self.nodes.items():
+                n2 = other.nodes.get(k1)
+                if n2 is None:
+                    disjoint_nodes += 1
+                else:
+                    # Homologous genes compute their own distance value.
+                    node_distance += n1.distance(n2, config)
+
+            max_nodes = max(len(self.nodes), len(other.nodes))
+            node_distance = (node_distance +
+                             (config.compatibility_disjoint_coefficient *
+                              disjoint_nodes)) / max_nodes
+
+        # Compute connection gene differences.
+        connection_distance = 0.0
+        if self.connections or other.connections:
+            disjoint_connections = 0
+            for k2 in other.connections:
+                if k2 not in self.connections:
+                    disjoint_connections += 1
+
+            for k1, c1 in self.connections.items():
+                c2 = other.connections.get(k1)
+                if c2 is None:
+                    disjoint_connections += 1
+                else:
+                    # Homologous genes compute their own distance value.
+                    connection_distance += c1.distance(c2, config)
+
+            max_conn = max(len(self.connections), len(other.connections))
+            connection_distance = (connection_distance +
+                                   (config.compatibility_disjoint_coefficient *
+                                    disjoint_connections)) / max_conn
+
+        distance = node_distance + connection_distance
+        return distance
+
+    def size(self):
+        """
+        Returns genome 'complexity', taken to be
+        (number of nodes, number of enabled connections)
+        """
+        num_enabled_connections = sum([1 for cg in self.connections.values() if cg.enabled])
+        return len(self.nodes), num_enabled_connections
+
+    def __str__(self):
+        s = "Key: {0}\nFitness: {1}\nNodes:".format(self.key, self.fitness)
+        for k, ng in self.nodes.items():
+            s += "\n\t{0} {1!s}".format(k, ng)
+        s += "\nConnections:"
+        connections = list(self.connections.values())
+        connections.sort()
+        for c in connections:
+            s += "\n\t" + str(c)
+        return s
+
+    @staticmethod
+    def create_node(config, node_id):
+        node = config.node_gene_type(node_id)
+        node.init_attributes(config)
+        return node
+
+    @staticmethod
+    def create_connection(config, input_id, output_id):
+        connection = config.connection_gene_type((input_id, output_id))
+        connection.init_attributes(config)
+        return connection
+
+    @staticmethod
+    def create_shared_connection(config, input_id, output_id, weightGene: WeightGene):
+        connection = SharedConnectionGene((input_id, output_id))
+        connection.init_attributes(config)
+        connection.weight = weightGene
         return connection
 
     def connect_fs_neat_nohidden(self, config):

@@ -85,6 +85,10 @@ class FloatAttribute(BaseAttribute):
         pass
 class EmptyAttribute(BaseAttribute):
     _config_items = {}
+    def init_value(self, config):
+        return None
+    def mutate_value(self, value, config):
+        return None
 
 class BoolAttribute(BaseAttribute):
     """Class for boolean attributes such as whether a connection is enabled or not."""

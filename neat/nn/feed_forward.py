@@ -41,8 +41,8 @@ class FeedForwardNetwork(object):
                     inode, onode = conn_key
                     if onode == node:
                         cg = genome.connections[conn_key]
-                        inputs.append((inode, cg.weight))
-                        node_expr.append("v[{}] * {:.7e}".format(inode, cg.weight))
+                        inputs.append((inode, cg.get_weight()))
+                        node_expr.append("v[{}] * {:.7e}".format(inode, cg.get_weight()))
 
                 ng = genome.nodes[node]
                 aggregation_function = config.genome_config.aggregation_function_defs.get(ng.aggregation)
