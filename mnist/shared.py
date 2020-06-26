@@ -1,12 +1,31 @@
 import numpy as np
 import neat
 import multiprocessing
+from random import sample
+import sys
 data = np.fromfile('train_data',dtype=np.uint8,count=28*28*60000,offset=16).reshape(-1,28*28)/255
 label = np.fromfile('train_label', dtype=np.uint8, count=60000, offset=8)
 onehot = np.eye(10)[label]
 
-data = data[:100]
-onehot = onehot[:100]
+import sys
+
+class Logger(object):
+    def __init__(self):
+        self.terminal = sys.stdout
+        self.log = open("shared.log", "a")
+
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)  
+        self.log.flush()
+
+    def flush(self):
+        #this flush method is needed for python 3 compatibility.
+        #this handles the flush command by doing nothing.
+        #you might want to specify some extra behavior here.
+        pass    
+
+sys.stdout = Logger()
 
 def softmax(x):
     x = np.array(x)
@@ -14,13 +33,14 @@ def softmax(x):
     return e_x/e_x.sum()
 
 def eval_genome(genome, config):
-    fitness = float(data.shape[0])
+    index = sample(range(60000),600)
+    fitness = float(len(index))
     net = neat.nn.FeedForwardNetwork.create(genome, config)
-    for xi, xo in zip(data, onehot):
+    for xi, xo in zip(data[index], onehot[index]):
         output = net.activate(xi)
 
         fitness -= np.square(softmax(output) - xo).sum()
-    return fitness / float(data.shape[0])
+    return fitness / float(len(index))
 
 def run():
     # Load configuration.
@@ -32,7 +52,10 @@ def run():
     p = neat.Population(config)
 
     # Add a stdout reporter to show progress in the terminal.
-    p.add_reporter(neat.StdOutReporter(False))
+    p.add_reporter(neat.StdOutReporter(True))
+    stats = neat.StatisticsReporter()
+    p.add_reporter(stats)
+    p.add_reporter(neat.Checkpointer(5))
 
     pe = neat.ParallelEvaluator(multiprocessing.cpu_count(), eval_genome)
     # Run until a solution is found.
