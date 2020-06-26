@@ -1,7 +1,7 @@
 """Handles node and connection genes."""
 import warnings
 from random import random
-from neat.attributes import FloatAttribute, BoolAttribute, StringAttribute
+from neat.attributes import FloatAttribute, BoolAttribute, StringAttribute, EmptyAttribute
 
 # TODO: There is probably a lot of room for simplification of these classes using metaprogramming.
 # TODO: Evaluate using __slots__ for performance/memory usage improvement.
@@ -117,3 +117,17 @@ class DefaultConnectionGene(BaseGene):
     def get_weight(self):
         return self.weight
 
+class WeightGene(BaseGene):
+    _gene_attributes = [FloatAttribute('weight')]
+    def __init__(self):
+        BaseGene.__init__(self,None)
+
+class SharedConnectionGene(DefaultConnectionGene):
+    _gene_attributes = [EmptyAttribute('weight'),
+                        BoolAttribute('enabled')]
+    def __init__(self, key, weightGene: WeightGene):
+        self.weight = weightGene
+        BaseGene.__init__(self, key)
+    def get_weight(self):
+        self.weight.weight
+    
