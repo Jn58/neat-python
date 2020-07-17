@@ -53,7 +53,7 @@ def run():
     p.add_reporter(neat.StdOutReporter(True))
     stats = neat.StatisticsReporter()
     p.add_reporter(stats)
-    p.add_reporter(neat.Checkpointer(5))
+    p.add_reporter(neat.Checkpointer(5, filename_prefix='shared_'))
 
     pe = neat.ParallelEvaluator(multiprocessing.cpu_count(), eval_genome)
     # Run until a solution is found.
