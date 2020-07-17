@@ -96,7 +96,7 @@ compatibility_weight_coefficient   = 0.5
 
 # connection add/remove rates
 conn_add_prob           = 0.5
-conn_shared_add_prob    = 0.5
+conn_shared_add_prob    = 0.7
 conn_delete_prob        = 0.5
 conn_reuse_weight_prob  = 0.9
 
